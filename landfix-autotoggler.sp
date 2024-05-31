@@ -2,17 +2,19 @@
 #include <sdktools>
 
 #define PLUGIN_NAME "Landfix AutoToggler"
-#define PLUGIN_VERSION "1.0"
+#define PLUGIN_VERSION "1.2"
 #define PLUGIN_AUTHOR "Wool"
 
-new Handle:g_hJumps[MAXPLAYERS + 1];
-new Handle:g_hJumpCounts[MAXPLAYERS + 1];
+new Handle:g_hJumpSettings[MAXPLAYERS + 1];
+static int g_JumpCounts[MAXPLAYERS + 1]; // Store jump counts for each player
+static bool g_bJumpTogglesEnabled[MAXPLAYERS + 1]; // Store whether jump toggles are enabled for each player
+static bool g_bLandfixEnabled[MAXPLAYERS + 1]; // Store whether landfix is enabled for each player
 
 public Plugin:myinfo =
 {
     name = PLUGIN_NAME,
     author = PLUGIN_AUTHOR,
-    description = "Executes a command on the specified jump",
+    description = "Executes commands on specified jumps",
     version = PLUGIN_VERSION,
     url = ""
 };
@@ -20,12 +22,18 @@ public Plugin:myinfo =
 public OnPluginStart()
 {
     RegConsoleCmd("sm_lftoggle", Command_lfToggle, "Toggle the jump counter");
+    RegConsoleCmd("sm_lfoff", Command_lfOff, "Turn off the jump counter");
+    RegConsoleCmd("sm_lftoggleoff", Command_lfToggleOff, "Toggle jump counter off");
+    RegConsoleCmd("sm_r", Command_ResetRun, "Reset run");
+    RegConsoleCmd("r", Command_ResetRun, "Reset run (alias)");
     HookEvent("player_jump", Event_PlayerJump);
 
     for (int i = 1; i <= MaxClients; i++)
     {
-        g_hJumps[i] = INVALID_HANDLE;
-        g_hJumpCounts[i] = INVALID_HANDLE;
+        g_hJumpSettings[i] = INVALID_HANDLE;
+        g_JumpCounts[i] = 0;
+        g_bJumpTogglesEnabled[i] = true; // Jump toggles are enabled by default
+        g_bLandfixEnabled[i] = true; // Landfix is enabled by default
     }
 }
 
@@ -33,45 +41,66 @@ public Action:Command_lfToggle(client, args)
 {
     if (args < 1)
     {
-        PrintToChat(client, "Usage: !lftoggle <number>");
+        PrintToChat(client, "Usage: !lftoggle <jump1> <jump2> ... <jumpN>");
         return Plugin_Handled;
     }
     
-    new String:arg[10];
-    GetCmdArg(1, arg, sizeof(arg));
-    new jumps = StringToInt(arg);
-
-    if (jumps <= 0)
+    if (g_hJumpSettings[client] != INVALID_HANDLE)
     {
-        PrintToChat(client, "Please enter a valid number greater than 0.");
+        CloseHandle(g_hJumpSettings[client]);
+        g_hJumpSettings[client] = INVALID_HANDLE;
+    }
+
+    g_hJumpSettings[client] = CreateArray();
+
+    if (g_hJumpSettings[client] == INVALID_HANDLE)
+    {
+        PrintToChat(client, "Failed to create jump settings. Please try again later.");
         return Plugin_Handled;
     }
 
-    // Close any existing handles for the client
-    if (g_hJumps[client] != INVALID_HANDLE)
+    for (int i = 1; i <= args; i++)
     {
-        CloseHandle(g_hJumps[client]);
-        g_hJumps[client] = INVALID_HANDLE;
-    }
-    if (g_hJumpCounts[client] != INVALID_HANDLE)
-    {
-        CloseHandle(g_hJumpCounts[client]);
-        g_hJumpCounts[client] = INVALID_HANDLE;
-    }
-    
-    g_hJumps[client] = CreateTrie();
-    g_hJumpCounts[client] = CreateTrie();
+        new String:jumpStr[10];
+        GetCmdArg(i, jumpStr, sizeof(jumpStr));
 
-    if (g_hJumps[client] == INVALID_HANDLE || g_hJumpCounts[client] == INVALID_HANDLE)
-    {
-        PrintToChat(client, "Failed to create jump counter. Please try again later.");
-        return Plugin_Handled;
+        new jump = StringToInt(jumpStr);
+
+        if (jump <= 0)
+        {
+            PrintToChat(client, "Please enter valid numbers greater than 0.");
+            CloseHandle(g_hJumpSettings[client]);
+            g_hJumpSettings[client] = INVALID_HANDLE;
+            return Plugin_Handled;
+        }
+
+        PushArrayCell(g_hJumpSettings[client], jump);
     }
 
-    SetTrieValue(g_hJumps[client], "jump_target", jumps);
-    SetTrieValue(g_hJumpCounts[client], "jump_count", 0);
-    
-    PrintToChat(client, "Jump counter set to %d jumps.", jumps);
+    PrintToChat(client, "Jump toggles set, write !lftoggleoff to disable.");
+    g_bJumpTogglesEnabled[client] = true; // Enable jump toggles
+    return Plugin_Handled;
+}
+
+public Action:Command_lfOff(client, args)
+{
+    g_bLandfixEnabled[client] = false;
+    PrintToChat(client, "Landfix toggled off.");
+    return Plugin_Handled;
+}
+
+public Action:Command_lfToggleOff(client, args)
+{
+    g_bJumpTogglesEnabled[client] = false;
+    PrintToChat(client, "Jump toggles disabled.");
+    return Plugin_Handled;
+}
+
+public Action:Command_ResetRun(client, args)
+{
+    // Reset the jump count for the client
+    g_JumpCounts[client] = 0;
+    // Removed the reset confirmation message
     return Plugin_Handled;
 }
 
@@ -85,50 +114,37 @@ public Action:Event_PlayerJump(Handle:event, const String:name[], bool:dontBroad
         return Plugin_Handled;
     }
     
-    if (g_hJumps[client] == INVALID_HANDLE)
+    if (g_hJumpSettings[client] == INVALID_HANDLE || !g_bJumpTogglesEnabled[client] || !g_bLandfixEnabled[client])
     {
-        // If the jump counter is not toggled for this player, do nothing
         return Plugin_Handled;
     }
-    
-    new jump_target, jump_count;
-    GetTrieValue(g_hJumps[client], "jump_target", jump_target);
-    GetTrieValue(g_hJumpCounts[client], "jump_count", jump_count);
-    
-    jump_count++;
-    
-    if (jump_count >= jump_target)
-    {
-        PrintToChat(client, "You have reached %d jumps!", jump_target);
-        // Execute the sm_landfix command here
-        ClientCommand(client, "sm_landfix");
 
-        // Close the handles to disable the jump counter for this player
-        CloseHandle(g_hJumps[client]);
-        g_hJumps[client] = INVALID_HANDLE;
-        CloseHandle(g_hJumpCounts[client]);
-        g_hJumpCounts[client] = INVALID_HANDLE;
-    }
-    else
+    g_JumpCounts[client]++;
+
+    new size = GetArraySize(g_hJumpSettings[client]);
+    for (int i = 0; i < size; i++)
     {
-        // Update the jump count
-        SetTrieValue(g_hJumpCounts[client], "jump_count", jump_count);
+        new jump = GetArrayCell(g_hJumpSettings[client], i);
+
+        if (g_JumpCounts[client] == jump)
+        {
+            ClientCommand(client, "sm_landfix");
+        }
     }
-    
+
     return Plugin_Handled;
 }
 
 public OnClientDisconnect(client)
 {
-    if (g_hJumps[client] != INVALID_HANDLE)
+    if (g_hJumpSettings[client] != INVALID_HANDLE)
     {
-        CloseHandle(g_hJumps[client]);
-        g_hJumps[client] = INVALID_HANDLE;
+        CloseHandle(g_hJumpSettings[client]);
+        g_hJumpSettings[client] = INVALID_HANDLE;
     }
     
-    if (g_hJumpCounts[client] != INVALID_HANDLE)
-    {
-        CloseHandle(g_hJumpCounts[client]);
-        g_hJumpCounts[client] = INVALID_HANDLE;
-    }
+    // Reset the jump count when the client disconnects
+    g_JumpCounts[client] = 0;
+    g_bJumpTogglesEnabled[client] = true; // Reset jump toggles state
+    g_bLandfixEnabled[client] = true; // Reset landfix state
 }
